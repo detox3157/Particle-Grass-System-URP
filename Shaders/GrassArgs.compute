@@ -1,0 +1,19 @@
+#define UNITY_INDIRECT_DRAW_ARGS IndirectDrawIndexedArgs
+#include "UnityIndirect.cginc"
+
+RWStructuredBuffer<IndirectDrawIndexedArgs> _ArgsBuffer;
+
+uint _IndexCount;
+float4 _GrassConfig; // x grass density
+
+#pragma kernel CalculateGrassArgs
+[numthreads(1,1,1)]
+void CalculateGrassArgs (in uint id : SV_DispatchThreadID)
+{
+    IndirectDrawIndexedArgs args = (IndirectDrawIndexedArgs) 0;
+    
+    args.instanceCount = (uint) (_GrassConfig.x * _GrassConfig.x);
+    args.indexCountPerInstance = _IndexCount;
+    
+    _ArgsBuffer[id] = args;
+}

@@ -1,0 +1,36 @@
+#define DOUBLE_PI 6.283185307
+
+#include "Noise.hlsl"
+
+RWTexture2D<float4> _WindMap;
+
+float4 _WindConfig;
+float4 _WindMapConfig;
+
+float4 WindNoiseOctave(float2 coord, float growthSpeed)
+{
+    return abs(snoise(float3(coord.x, _WindConfig.x * growthSpeed, coord.y)));
+}
+
+#pragma kernel CalculateGrassWind
+[numthreads(8,8,1)]
+void CalculateGrassWind (in uint2 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint) _WindMapConfig.x || id.y >= (uint) _WindMapConfig.y)
+    {
+        return;
+    }
+
+    float2 windDirection = 0;
+    sincos(_WindConfig.z * DOUBLE_PI, windDirection.x, windDirection.y);
+    float2 coord = float2(id.x, id.y) / _WindMapConfig.xy;
+    float2 timeOffset = float2(-_WindConfig.x * windDirection.y, _WindConfig.x * windDirection.x);
+
+    float4 windNoise =
+        WindNoiseOctave(coord * 20 + timeOffset * 0.1, 0.1) * 0.5 +
+        WindNoiseOctave(coord * 30 + timeOffset * 0.2, 0.2) * 0.25 +
+        WindNoiseOctave(coord * 200 - timeOffset * 0.3, 0.1) * 0.125 +
+        WindNoiseOctave(coord * 300 - timeOffset * 0.4, 0.05) * 0.125;
+
+    _WindMap[id] = windNoise * _WindConfig.y;
+}

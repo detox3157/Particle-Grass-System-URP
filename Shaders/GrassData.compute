@@ -1,0 +1,188 @@
+#define RENDER_SCALE_THRESHOLD 0.25
+
+#define DOUBLE_PI 6.283185307
+
+#include "Random.hlsl"
+
+float VoronoiDistance(float2 a, float2 b)
+{
+    return max(abs(a.x - b.x), abs(a.y - b.y));
+}
+
+#include "BufferTypes.hlsl"
+
+RWStructuredBuffer<GrassData> _GrassBuffer;
+RWTexture2D<float4> _WindMap;
+Texture2D _Heightmap, _GrassMap;
+
+StructuredBuffer<GrassArtisticParameters> _ArtisticBuffer;
+
+float4 _GrassConfig; // x grass density, yzw camera pos
+float4 _TerrainConfig; // xy start, zw size
+float4 _ChunkConfig; // xy center, zw size
+float4 _WindConfig; // x phase, y intensity, z direction
+float4 _WindMapConfig; // xy resolution
+float4 _HeightmapConfig; // xy resolution, z height start, w max height
+float4 _GrassMapConfig; // xy resolution
+
+void GetClump(float2 position, float clumpSize, out float2 clumpCenter, out uint clumpHash) {
+    position /= clumpSize;
+    
+    float2 cell_position_f = floor(position);
+    float2 local_position = position - cell_position_f;
+    int2 cell_position = int2(cell_position_f);
+
+    clumpHash = Hash(uint3(cell_position.x, 0, cell_position.y));
+    float2 point_position = HashToFloat2(clumpHash);
+    float min_distance = VoronoiDistance(point_position, local_position);
+    clumpCenter = point_position;
+
+    for(int x = -1; x <= 1; x++) {
+        for(int y = -1; y <= 1; y++) {
+            int2 cell_offset = int2(x, y);
+            uint cell_hash = Hash(uint3(cell_position.x + x + 1000000, 0, cell_position.y + y + 1000000));
+            point_position = float2(cell_offset) + HashToFloat2(cell_hash);
+            float distance_to_point = VoronoiDistance(point_position, local_position);
+            
+            if (distance_to_point < min_distance)
+            {
+                min_distance = distance_to_point;
+                clumpCenter = point_position;
+                clumpHash = cell_hash;
+            }
+        }
+    }
+
+    clumpCenter = (cell_position_f + clumpCenter) * clumpSize;
+}
+
+float SampleWind(float2 uv)
+{
+    float2 pos = uv * _WindMapConfig.xy;
+    int2 posInt = int2(pos.x, pos.y);
+    float2 offset = frac(pos);
+
+    if (posInt.x + 1 >= _WindMapConfig.x) offset.x = 0;
+    if (posInt.y + 1 >= _WindMapConfig.y) offset.y = 0;
+    
+    return lerp(
+        lerp(_WindMap[posInt].r, _WindMap[posInt + int2(1, 0)].r, offset.x),
+        lerp(_WindMap[posInt + int2(0, 1)].r, _WindMap[posInt + int2(1, 1)].r, offset.x),
+        offset.y
+    );
+}
+
+float SampleHeight(float2 uv)
+{
+    float2 pos = uv * _HeightmapConfig.xy;
+    int2 posInt = int2(pos.x, pos.y);
+    float2 offset = frac(pos);
+
+    if (posInt.x + 1 >= _HeightmapConfig.x) offset.x = 0;
+    if (posInt.y + 1 >= _HeightmapConfig.y) offset.y = 0;
+    
+    return lerp(
+        lerp(_Heightmap[posInt].r, _Heightmap[posInt + int2(1, 0)].r, offset.x),
+        lerp(_Heightmap[posInt + int2(0, 1)].r, _Heightmap[posInt + int2(1, 1)].r, offset.x),
+        offset.y
+    ) * _HeightmapConfig.w + _HeightmapConfig.z;
+}
+
+float SampleGrassMapSize(float2 uv)
+{
+    float2 pos = uv * _GrassMapConfig.xy;
+    int2 posInt = int2(pos.x, pos.y);
+    float2 offset = frac(pos);
+
+    if (posInt.x + 1 >= _GrassMapConfig.x) offset.x = 0;
+    if (posInt.y + 1 >= _GrassMapConfig.y) offset.y = 0;
+    
+    return lerp(
+        lerp(_GrassMap[posInt].r, _GrassMap[posInt + int2(1, 0)].r, offset.x),
+        lerp(_GrassMap[posInt + int2(0, 1)].r, _GrassMap[posInt + int2(1, 1)].r, offset.x),
+        offset.y
+    );
+}
+
+uint SampleGrassMapType(float2 uv)
+{
+    float2 pos = uv * _GrassMapConfig.xy;
+    int2 posInt = int2(pos.x, pos.y);
+
+    return (uint) (_GrassMap[posInt].g * 256);
+}
+
+void SetupGrassData(inout GrassData grassData, uint2 id)
+{
+    float2 position = float2(
+        (id.x / _GrassConfig.x - 0.5) * _ChunkConfig.z + _ChunkConfig.x,
+        (id.y / _GrassConfig.x - 0.5) * _ChunkConfig.w + _ChunkConfig.y
+    );
+
+    uint3 seed = uint3(position.x * _GrassConfig.x + 1e6, 0, position.y * _GrassConfig.x * 1000 + 1e6);
+
+    uint bladeHash1 = Hash(seed);
+    uint bladeHash2 = Hash(seed + 1000);
+    uint bladeHash3 = Hash(seed + 2000);
+
+    float4 rand1 = HashToFloat4(bladeHash1), rand2 = HashToFloat4(bladeHash2), rand3 = HashToFloat4(bladeHash3);
+
+    float2 jitter = rand1.xy - float2(0.5, 0.5);
+
+    float2 uv = (position - _TerrainConfig.xy) / _TerrainConfig.zw;
+    float size = SampleGrassMapSize(uv);
+    uint type = SampleGrassMapType(uv);
+    GrassArtisticParameters parameters = _ArtisticBuffer[type];
+
+    float2 clumpCenter;
+    uint clump_hash;
+    GetClump(position, parameters.clumpSize, clumpCenter, clump_hash);
+    float3 clumpRand = HashToFloat3(clump_hash);
+    
+    position = lerp(position, clumpCenter, rand1.z * parameters.clumpingStrength);
+    position += jitter * parameters.jitterStrength;
+
+    uv = (position - _TerrainConfig.xy) / _TerrainConfig.zw;
+    float windIntensity = SampleWind(uv);
+
+    float3 positionWS = float3(position.x, SampleHeight(uv), position.y);
+    float dist = distance(_GrassConfig.yzw, positionWS);
+    float movementCutoff = pow(1 - saturate((dist - parameters.movementDistanceCutoff.x) / (parameters.movementDistanceCutoff.y - parameters.movementDistanceCutoff.x)), 2);
+    
+    float rotation = (rand1.w - 0.5) * parameters.rotationRange;
+    rotation = (_WindConfig.z + lerp(rotation, rotation * pow(1 - windIntensity, parameters.followWindDirectionStrength), movementCutoff)) * DOUBLE_PI;
+
+    float baseTilt = lerp(parameters.tiltRange.x, parameters.tiltRange.y, rand2.x);
+    float baseBend = lerp(parameters.bendRange.x, parameters.bendRange.y, rand2.y);
+    
+    float scale = lerp(parameters.sizeRange.x, parameters.sizeRange.y, rand2.w) * parameters.size * size;
+    if (scale < RENDER_SCALE_THRESHOLD ||
+        position.x < _TerrainConfig.x ||
+        position.y < _TerrainConfig.y ||
+        position.x >= _TerrainConfig.x + _TerrainConfig.z ||
+        position.y >= _TerrainConfig.y + _TerrainConfig.w)
+    {
+        scale = 0;
+    }
+    
+    grassData.position = positionWS;
+    grassData.bitangent = float2(sin(rotation), cos(rotation));
+    grassData.tilt = min(0.9, baseTilt + windIntensity * movementCutoff);
+    grassData.bend = max(0.1, baseBend - windIntensity * movementCutoff);
+    grassData.scale = scale;
+    grassData.width = lerp(parameters.widthRange.x, parameters.widthRange.y, rand2.z);
+    grassData.windIntensity = windIntensity;
+    grassData.phaseOffset = rand3.x * DOUBLE_PI;
+    grassData.type = type;
+    grassData.hash = bladeHash3;
+}
+
+#pragma kernel CalculateGrassData
+[numthreads(8,8,1)]
+void CalculateGrassData (in uint2 id : SV_DispatchThreadID)
+{
+    if (id.x < (uint) _GrassConfig.x && id.y < (uint) _GrassConfig.x)
+    {
+        SetupGrassData(_GrassBuffer[id.x * _GrassConfig.x + id.y], id);
+    }
+}

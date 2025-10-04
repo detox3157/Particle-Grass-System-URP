@@ -1,0 +1,81 @@
+#define FALLOFF_THRESHOLD 0.1
+#define MASK_THRESHOLD 0.1
+
+RWTexture2D<float4> _GrassMap, _PaintingMask;
+
+Texture2D _FalloffMask;
+
+float4 _BrushConfig; // xy falloff res
+float4 _PaintActionConfig; // x strength, y direction, z mode, w type
+float4 _SurfaceConfig; // xy grass map res
+
+float4 _PointConfig; // xy int coord, zw pixel size
+
+float SampleFalloff(uint2 id)
+{
+    int2 coord = float2(id) / _PointConfig.zw * _BrushConfig.xy;
+    return _FalloffMask[coord].a;
+}
+
+uint2 GetPixelCoord(uint2 id)
+{
+    return id + _PointConfig.xy - _PointConfig.zw * 0.5;
+}
+
+#pragma kernel Paint
+[numthreads(8,8,1)]
+void Paint (in uint2 id : SV_DispatchThreadID)
+{
+    if (id.x > (uint)_PointConfig.z || id.y > (uint)_PointConfig.w)
+    {
+        return;
+    }
+
+    int2 pixelCoord = GetPixelCoord(id);
+    
+    if (pixelCoord.x < 0 || pixelCoord.y < 0 || pixelCoord.x >= _SurfaceConfig.x || pixelCoord.y >= _SurfaceConfig.x)
+    {
+        return;
+    }
+
+    float falloff = SampleFalloff(id);
+    float strength = _PaintActionConfig.x * _PaintActionConfig.y;
+
+    if (falloff < FALLOFF_THRESHOLD) falloff = 0;
+
+    float4 mask = _PaintingMask[pixelCoord];
+    
+    float4 color = _GrassMap[pixelCoord];
+    
+    if (_PaintActionConfig.z == 1)
+    {
+        if (mask.r < MASK_THRESHOLD)
+        {
+            float resultR = saturate(color.r + strength * falloff * (1 - mask.r));
+            if (resultR - color.r > FALLOFF_THRESHOLD)
+            {
+                mask.r = 1;
+            }
+            color.r = resultR;
+        }
+    } else if (_PaintActionConfig.z == 2)
+    {
+        if (mask.r < MASK_THRESHOLD)
+        {
+            if (falloff > FALLOFF_THRESHOLD)
+            {
+                mask.r = 1;
+            }
+            color.r = saturate(color.r * strength * falloff);
+        }
+    } else if (_PaintActionConfig.z == 3)
+    {
+        color.r = saturate(falloff * strength);
+    }
+
+    color.g = _PaintActionConfig.w;
+    
+    _PaintingMask[pixelCoord] = mask;
+    _GrassMap[pixelCoord] = color;
+}
+
