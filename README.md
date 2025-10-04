@@ -1,6 +1,22 @@
 # Particle Grass System
 Inspired by grass system of Ghost Of Tsushima. Only compatible with URP. HDRP is now WIP.
 
+## Features
+
+1. Paticle system, which creates individual mesh for each blade of grass
+2. Wind system and quadratic bezier curve calculation for each blade, which gives realistic bend of grass
+3. Shader Graph integration, so the shader is fully customizable
+4. Grass editor, full artistic customization of grass, up to 256 types of grass available to create and edit
+5. Interaction system with multiple types of interactors (each with it's own behaviour and effect on grass)
+
+![1004_1](https://github.com/user-attachments/assets/897cf577-8339-4432-9b33-4c179b8bf028)
+
+https://github.com/user-attachments/assets/6bad84f0-2839-4bd4-ae69-52048d0c1b50
+
+## Performance
+
+I have tested the system on my Macbook 2023 with M2 chip. It takes about 7.2 milliseconds overall in worst case (1M+ grass blades rendered), 2.2 ms for compute shaders and 5 ms for indirect calls. 8 ms averall if scan enabled (in worst case when it only does frustum culling and no size culling). I have also tested the system on a PC with Nvidia Geforce 3070 TI. It takes about 2.4 milliseconds on average without sync compute shaders and 2.1 with them. 
+
 ## Principle Of Work
 
 First step is subdividing grass surface (a component which is defined by Heightmap and Bounds) into chunks. Chunk system allows us to bypass the Structured Buffer size limits, 
